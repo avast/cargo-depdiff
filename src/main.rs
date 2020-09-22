@@ -13,6 +13,8 @@ use itertools::{EitherOrBoth, Itertools};
 use structopt::StructOpt;
 use thiserror::Error;
 
+mod sources;
+
 /*
  * FIXME: What will happen if package moves from one source to another? When it gets renamed?
  */
@@ -98,6 +100,16 @@ enum Op {
     Add(Dep),
     Remove(Dep),
     Update(Dep, Dep),
+}
+
+impl Op {
+    fn print_root(&self) {
+        match self {
+            Op::Add(dep) | Op::Remove(dep) | Op::Update(_, dep) => {
+                println!("Root of {}: {}", dep.name, dep.dir().map(|d| d.display().to_string()).unwrap_or_default());
+            }
+        }
+    }
 }
 
 impl Display for Op {
@@ -205,6 +217,7 @@ fn main() -> Result<(), Error> {
             EitherOrBoth::Both(old, new) => Either::Right(find_vers_diff(old.1, new.1)),
         })
         .for_each(|op| {
+            op.print_root();
             println!("{}", op);
         });
 
