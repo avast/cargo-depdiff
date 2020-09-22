@@ -2,9 +2,11 @@ use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
+use std::iter;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Error};
+use cargo::util::config::Config;
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
 use either::Either;
@@ -12,6 +14,8 @@ use git2::{Object, ObjectType, Oid, Repository};
 use itertools::{EitherOrBoth, Itertools};
 use structopt::StructOpt;
 use thiserror::Error;
+
+use sources::Resolver;
 
 mod sources;
 
@@ -103,10 +107,11 @@ enum Op {
 }
 
 impl Op {
-    fn print_root(&self) {
+    fn print_root(&self, resolver: &Resolver) {
         match self {
             Op::Add(dep) | Op::Remove(dep) | Op::Update(_, dep) => {
-                println!("Root of {}: {}", dep.name, dep.dir().map(|d| d.display().to_string()).unwrap_or_default());
+                let dir = resolver.dir(dep).map(|d| d.display().to_string()).unwrap_or_default();
+                println!("Root of {}: {}", dep.name, dir);
             }
         }
     }
@@ -209,17 +214,29 @@ fn main() -> Result<(), Error> {
         (old, new)
     };
 
-    old.into_iter()
+    let ops = old.into_iter()
         .merge_join_by(new, |l, r| l.0.cmp(&r.0))
         .flat_map(|dep_group| match dep_group {
             EitherOrBoth::Left(remove) => Either::Left(wrap_op(Op::Remove, remove.1)),
             EitherOrBoth::Right(add) => Either::Left(wrap_op(Op::Add, add.1)),
             EitherOrBoth::Both(old, new) => Either::Right(find_vers_diff(old.1, new.1)),
         })
-        .for_each(|op| {
-            op.print_root();
-            println!("{}", op);
+        .collect::<Vec<_>>();
+
+    let all_deps = ops
+        .iter()
+        .flat_map(|op| match op {
+            Op::Add(dep) | Op::Remove(dep) => Either::Left(iter::once(dep)),
+            Op::Update(old, new) => Either::Right(iter::once(old).chain(iter::once(new))),
         });
+
+    let config = Config::default()?;
+    let resolver = Resolver::new(&config, all_deps)?;
+
+    for op in &ops {
+        op.print_root(&resolver);
+        println!("{}", op);
+    }
 
     Ok(())
 }
