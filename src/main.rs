@@ -4,9 +4,9 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::path::Path;
 
 use anyhow::{Context, Error};
-use either::Either;
-use cargo_lock::Lockfile;
 use cargo_lock::package::{Name, Package, SourceId, Version};
+use cargo_lock::Lockfile;
+use either::Either;
 use itertools::{EitherOrBoth, Itertools};
 
 /*
@@ -62,7 +62,9 @@ impl Display for Op {
         match self {
             Op::Add(dep) => write!(fmt, "+++ {} {}", dep.name, dep.version),
             Op::Remove(dep) => write!(fmt, "--- {} {}", dep.name, dep.version),
-            Op::Update(old, new) => write!(fmt, "    {} {} -> {}", old.name, old.version, new.version),
+            Op::Update(old, new) => {
+                write!(fmt, "    {} {} -> {}", old.name, old.version, new.version)
+            }
         }
     }
 }
@@ -75,10 +77,7 @@ fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
     let mut old: BTreeSet<_> = old.into_iter().collect();
     let mut new: BTreeSet<_> = new.into_iter().collect();
 
-    let unchanged = old
-        .intersection(&new)
-        .cloned()
-        .collect::<Vec<_>>();
+    let unchanged = old.intersection(&new).cloned().collect::<Vec<_>>();
 
     for u in unchanged {
         old.remove(&u);
@@ -92,8 +91,7 @@ fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
     let removed = old.drain(common..).collect::<Vec<_>>();
     let added = new.drain(common..).collect::<Vec<_>>();
 
-    let common = (old.into_iter().zip(new))
-        .map(|(old, new)| Op::Update(old, new));
+    let common = (old.into_iter().zip(new)).map(|(old, new)| Op::Update(old, new));
     let removed = removed.into_iter().map(Op::Remove);
     let added = added.into_iter().map(Op::Add);
 
@@ -104,11 +102,8 @@ fn main() -> Result<(), Error> {
     let old = process_lockfile("testdata/old.lock")?;
     let new = process_lockfile("testdata/new.lock")?;
 
-    old
-        .into_iter()
-        .merge_join_by(new, |l, r| {
-            l.0.cmp(&r.0)
-        })
+    old.into_iter()
+        .merge_join_by(new, |l, r| l.0.cmp(&r.0))
         .flat_map(|dep_group| match dep_group {
             EitherOrBoth::Left(remove) => Either::Left(wrap_op(Op::Remove, remove.1)),
             EitherOrBoth::Right(add) => Either::Left(wrap_op(Op::Add, add.1)),
