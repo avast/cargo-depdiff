@@ -13,20 +13,20 @@ use semver::Version;
 use super::Dep;
 
 impl Dep {
-    fn pkg_id(&self, config: &Config) -> Result<PackageId, Error> {
+    // Returns None in case of local dependencies/workspace stuff (not included)
+    fn pkg_id(&self) -> Result<Option<PackageId>, Error> {
         // FIXME: A lot of ugly. Different version, different crates...
         let version: Version = self.version.to_string().parse().unwrap();
         let source = match self.source.as_ref() {
             Some(source) => SourceId::from_url(&source.to_string())?,
-            None => SourceId::crates_io(config)?,
+            None => return Ok(None),
         };
         let pkg_id = PackageId::new(self.name.as_str(), version, source)?;
-        Ok(pkg_id)
+        Ok(Some(pkg_id))
     }
 }
 
 pub(crate) struct Resolver<'cfg> {
-    config: &'cfg Config,
     pkgs: PackageSet<'cfg>,
 }
 
@@ -37,9 +37,10 @@ impl<'cfg> Resolver<'cfg> {
     {
         let pkgs = deps
             .into_iter()
-            .map(|d| {
-                d.pkg_id(&config)
+            .filter_map(|d| {
+                d.pkg_id()
                     .with_context(|| format!("Can't create pkg id for {}", d.name))
+                    .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -55,19 +56,18 @@ impl<'cfg> Resolver<'cfg> {
         let package_set = PackageSet::new(&pkgs, source_map, config)?;
 
         Ok(Self {
-            config,
             pkgs: package_set,
         })
     }
 
-    pub(crate) fn pkg(&self, dep: &Dep) -> Result<&Package, Error> {
-        let id = dep.pkg_id(self.config)?;
-        let pkg = self.pkgs.get_one(id)?;
+    pub(crate) fn pkg(&self, dep: &Dep) -> Result<Option<&Package>, Error> {
+        let id = dep.pkg_id()?;
+        let pkg = id.map(|id| self.pkgs.get_one(id)).transpose()?;
         Ok(pkg)
     }
 
-    pub(crate) fn dir(&self, dep: &Dep) -> Result<&Path, Error> {
+    pub(crate) fn dir(&self, dep: &Dep) -> Result<Option<&Path>, Error> {
         let pkg = self.pkg(dep)?;
-        Ok(pkg.root())
+        Ok(pkg.map(|pkg| pkg.root()))
     }
 }

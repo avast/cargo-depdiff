@@ -122,47 +122,51 @@ impl Op {
         match self {
             Op::Remove(_) => (), // Removing deps is always good!
             Op::Add(dep) => {
-                let pkg = resolver.pkg(dep)?;
-                if pkg.has_custom_build() {
-                    println!("--> Has a build script");
-                }
-                if pkg.proc_macro() {
-                    println!("--> Is a proc macro");
+                if let Some(pkg) = resolver.pkg(dep)? {
+                    if pkg.has_custom_build() {
+                        println!("--> Has a build script");
+                    }
+                    if pkg.proc_macro() {
+                        println!("--> Is a proc macro");
+                    }
                 }
             }
             Op::Update(old, new) => {
                 let old = resolver.pkg(old)?;
                 let new = resolver.pkg(new)?;
+                if let (Some(old), Some(new)) = (old, new) {
+                    if !old.has_custom_build() && new.has_custom_build() {
+                        println!("--> Adds a build script");
+                    }
+                    if !old.proc_macro() && new.proc_macro() {
+                        println!("--> Turns into a build script");
+                    }
 
-                if !old.has_custom_build() && new.has_custom_build() {
-                    println!("--> Adds a build script");
-                }
-                if !old.proc_macro() && new.proc_macro() {
-                    println!("--> Turns into a build script");
-                }
+                    let old_meta = old.manifest().metadata();
+                    let new_meta = new.manifest().metadata();
+                    if old_meta.license != new_meta.license {
+                        println!(
+                            "--> License changed from {} to {}",
+                            old_meta.license.as_deref().unwrap_or("<none>"),
+                            new_meta.license.as_deref().unwrap_or("<none>"),
+                        );
+                    }
 
-                let old_meta = old.manifest().metadata();
-                let new_meta = new.manifest().metadata();
-                if old_meta.license != new_meta.license {
-                    println!(
-                        "--> License changed to {}",
-                        new_meta.license.as_deref().unwrap_or("<none>")
-                    );
-                }
+                    if old_meta.license_file != new_meta.license_file {
+                        println!(
+                            "--> License file changed from {} to {}",
+                            old_meta.license_file.as_deref().unwrap_or("<none>"),
+                            new_meta.license_file.as_deref().unwrap_or("<none>"),
+                        );
+                    }
 
-                if old_meta.license_file != new_meta.license_file {
-                    println!(
-                        "--> License file changed to {}",
-                        new_meta.license_file.as_deref().unwrap_or("<none>")
-                    );
-                }
+                    let old_authors = old_meta.authors.iter().collect::<BTreeSet<_>>();
+                    let new_authors = new_meta.authors.iter().collect::<BTreeSet<_>>();
+                    let added_authors = &new_authors - &old_authors;
 
-                let old_authors = old_meta.authors.iter().collect::<BTreeSet<_>>();
-                let new_authors = new_meta.authors.iter().collect::<BTreeSet<_>>();
-                let added_authors = &new_authors - &old_authors;
-
-                if !added_authors.is_empty() {
-                    println!("--> Additional authors ({})", added_authors.iter().join(", "));
+                    if !added_authors.is_empty() {
+                        println!("--> Additional authors ({})", added_authors.iter().join(", "));
+                    }
                 }
 
                 // TODO: We also want maintainers, these are not available through the manifest,
@@ -190,6 +194,11 @@ fn wrap_op(op: fn(Dep) -> Op, desp: Vec<Dep>) -> impl Iterator<Item = Op> {
     desp.into_iter().map(op)
 }
 
+/* FIXME: This should be done differently!
+ *
+ * --- error-chain 0.12.1
+ *     error-chain 0.11.0 -> 0.12.2
+ */
 fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
     let mut old: BTreeSet<_> = old.into_iter().collect();
     let mut new: BTreeSet<_> = new.into_iter().collect();
@@ -295,10 +304,10 @@ fn main() -> Result<(), Error> {
     let resolver = Resolver::new(&config, all_deps)?;
 
     for op in &ops {
+        println!("{}", op);
         if opts.metadata {
             op.print_metadata(&resolver)?;
         }
-        println!("{}", op);
     }
 
     Ok(())
