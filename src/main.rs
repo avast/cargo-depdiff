@@ -1,13 +1,14 @@
 use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Error};
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
 use either::Either;
-use git2::{Object, Oid, Repository};
+use git2::{Object, ObjectType, Oid, Repository};
 use itertools::{EitherOrBoth, Itertools};
 use structopt::StructOpt;
 use thiserror::Error;
@@ -20,7 +21,7 @@ use thiserror::Error;
 #[derive(Debug, StructOpt)]
 struct Opts {
     /// Git range specifying the changes to inspect.
-    revspec: String,
+    revspec: Option<String>,
 
     /// Path to the lock file inside the repository.
     ///
@@ -65,12 +66,8 @@ fn snapshot_to_file_content(repo: &Repository, hash: Oid, path: &Path) -> Result
 
 type Deps = BTreeMap<Name, Vec<Dep>>;
 
-fn process_lockfile(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, Error> {
-    let data = snapshot_to_file_content(repo, hash, path)
-        .with_context(|| format!("Couldn't find lock file {} in {}", path.display(), hash))?;
-
-    let mut lockfile: Lockfile = data.parse()
-        .with_context(|| format!("{} in {} is not valid lock file", path.display(), hash))?;
+fn packages_from_str(data: &str) -> Result<Deps, Error> {
+    let mut lockfile: Lockfile = data.parse()?;
     lockfile.packages.sort_unstable();
 
     let mut packages = Deps::new();
@@ -83,6 +80,16 @@ fn process_lockfile(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, E
     }
 
     Ok(packages)
+}
+
+fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, Error> {
+    let data = snapshot_to_file_content(repo, hash, path)
+        .with_context(|| format!("Couldn't find lock file {} in {}", path.display(), hash))?;
+
+    let deps = packages_from_str(&data)
+        .with_context(|| format!("{} in {} is not valid lock file", path.display(), hash))?;
+
+    Ok(deps)
 }
 
 #[derive(Debug)]
@@ -147,30 +154,48 @@ fn main() -> Result<(), Error> {
     let repo = Repository::open(&opts.repo)
         .with_context(|| format!("Can't open git repo at {}", opts.repo.display()))?;
 
-    let spec = |spec: Option<&Object<'_>>| {
-        let spec = spec.ok_or(NotSpec)?.id();
-        process_lockfile(&repo, spec, &opts.path)
-    };
+    let (old, new) = if let Some(revspec) = opts.revspec.as_ref() {
+        let spec = |spec: Option<&Object<'_>>| {
+            let spec = spec.ok_or(NotSpec)?.id();
+            packages_from_git(&repo, spec, &opts.path)
+        };
 
-    let revspec = repo.revparse(&opts.revspec)?;
-    let parent;
+        let revspec = repo.revparse(revspec)?;
+        let parent;
 
-    let (old_id, new_id) = if revspec.mode().is_range() {
-        // a..b mode
-        (revspec.from(), revspec.to())
+        // FIXME: MERGE_BASE mode is not doing the right thing, probably
+        let (old_id, new_id) = if revspec.mode().is_range() {
+            // a..b mode
+            (revspec.from(), revspec.to())
+        } else {
+            // single-commit
+            //
+            // Compare to its first parent.
+            let commit_obj = revspec.from().ok_or(NotSpec).context("Single commit")?;
+            let commit = commit_obj.as_commit().with_context(|| format!("{} is not a commit", commit_obj.id()))?;
+
+            parent = commit.parent(0).map_err(|_| NoParent)?.into_object();
+            (Some(&parent), Some(commit_obj))
+        };
+
+        (
+            spec(old_id).context("Failed to decode old version")?,
+            spec(new_id).context("Failed to decode new version")?,
+        )
     } else {
-        // single-commit
-        //
-        // Compare to its first parent.
-        let commit_obj = revspec.from().ok_or(NotSpec).context("Single commit")?;
-        let commit = commit_obj.as_commit().with_context(|| format!("{} is not a commit", commit_obj.id()))?;
+        let head = repo.head().context("Failed to get current HEAD")?;
+        let commit = head.peel(ObjectType::Commit).context("Can't resolve HEAD to commit")?.id();
+        let old = packages_from_git(&repo, commit, &opts.path).context("Reading HEAD lock file")?;
 
-        parent = commit.parent(0).map_err(|_| NoParent)?.into_object();
-        (Some(&parent), Some(commit_obj))
+        let path = opts.repo.join(opts.path);
+        let current = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read current lock file at {}", path.display()))?;
+
+        let new = packages_from_str(&current)
+            .with_context(|| format!("{} is not valid lock file", path.display()))?;
+
+        (old, new)
     };
-
-    let old = spec(old_id).context("Failed to decode old version")?;
-    let new = spec(new_id).context("Failed to decode new version")?;
 
     old.into_iter()
         .merge_join_by(new, |l, r| l.0.cmp(&r.0))
