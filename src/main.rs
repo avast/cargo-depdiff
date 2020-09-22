@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::path::Path;
 
-use anyhow::{Context, Error};
+use anyhow::{anyhow, Context, Error};
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
 use either::Either;
+use git2::{Branch, Oid, Repository, Revspec};
 use itertools::{EitherOrBoth, Itertools};
 
 /*
@@ -96,6 +97,38 @@ fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
     let added = added.into_iter().map(Op::Add);
 
     common.chain(removed).chain(added)
+}
+
+fn snapshot_to_file_content(repo: &Repository, hash: Oid, path: &Path) -> Result<String, Error> {
+    let commit = repo.find_commit(hash)?;
+    let tree = commit.tree()?;
+    let tree_entry = tree.get_path(path)?;
+    let object = tree_entry.to_object(&repo)?;
+    let blob = object.as_blob().ok_or(anyhow!("not a blob"))?;
+    let content = blob.content();
+    String::from_utf8(content.to_owned()).map_err(|_| anyhow!("cannot pase as UTF-8"))
+}
+
+fn branch_to_file_content(repo: &Repository, branch: Branch, path: &Path) -> Result<String, Error> {
+    let reference = branch.into_reference();
+    let tree = reference.peel_to_tree()?;
+    let tree_entry = tree.get_path(path)?;
+    let object = tree_entry.to_object(&repo)?;
+    let blob = object.as_blob().ok_or(anyhow!("not a blob"))?;
+    let content = blob.content();
+    String::from_utf8(content.to_owned()).map_err(|_| anyhow!("cannot pase as UTF-8"))
+}
+
+fn range_to_contents(
+    repo: &Repository,
+    revspec: Revspec,
+    path: &Path,
+) -> Result<(String, String), Error> {
+    let old = revspec.from().ok_or(anyhow!("not a from spec"))?.id();
+    let new = revspec.to().ok_or(anyhow!("not a to spec"))?.id();
+    let old = snapshot_to_file_content(repo, old, path)?;
+    let new = snapshot_to_file_content(repo, new, path)?;
+    Ok((old, new))
 }
 
 fn main() -> Result<(), Error> {
