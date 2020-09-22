@@ -138,20 +138,39 @@ fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
 #[error("Not a git spec")]
 struct NotSpec;
 
+#[derive(Error, Debug)]
+#[error("No parent to compare to")]
+struct NoParent;
+
 fn main() -> Result<(), Error> {
     let opts = Opts::from_args();
     let repo = Repository::open(&opts.repo)
         .with_context(|| format!("Can't open git repo at {}", opts.repo.display()))?;
-
-    let revspec = repo.revparse(&opts.revspec)?;
 
     let spec = |spec: Option<&Object<'_>>| {
         let spec = spec.ok_or(NotSpec)?.id();
         process_lockfile(&repo, spec, &opts.path)
     };
 
-    let old = spec(revspec.from()).context("Failed to decode old version")?;
-    let new = spec(revspec.to()).context("Failed to decode new version")?;
+    let revspec = repo.revparse(&opts.revspec)?;
+    let parent;
+
+    let (old_id, new_id) = if revspec.mode().is_range() {
+        // a..b mode
+        (revspec.from(), revspec.to())
+    } else {
+        // single-commit
+        //
+        // Compare to its first parent.
+        let commit_obj = revspec.from().ok_or(NotSpec).context("Single commit")?;
+        let commit = commit_obj.as_commit().with_context(|| format!("{} is not a commit", commit_obj.id()))?;
+
+        parent = commit.parent(0).map_err(|_| NoParent)?.into_object();
+        (Some(&parent), Some(commit_obj))
+    };
+
+    let old = spec(old_id).context("Failed to decode old version")?;
+    let new = spec(new_id).context("Failed to decode new version")?;
 
     old.into_iter()
         .merge_join_by(new, |l, r| l.0.cmp(&r.0))
