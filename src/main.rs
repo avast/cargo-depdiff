@@ -6,24 +6,44 @@ use std::path::Path;
 use anyhow::{Context, Error};
 use either::Either;
 use cargo_lock::Lockfile;
-use cargo_lock::package::Package;
-use cargo_lock::package::name::Name;
+use cargo_lock::package::{Name, Package, SourceId, Version};
 use itertools::{EitherOrBoth, Itertools};
 
-type Packages = BTreeMap<Name, Vec<Package>>;
+/*
+ * FIXME: What will happen if package moves from one source to another? When it gets renamed?
+ */
 
-fn process_lockfile<P: AsRef<Path>>(p: P) -> Result<Packages, Error> {
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+struct Dep {
+    name: Name,
+    version: Version,
+    source: Option<SourceId>,
+}
+
+impl From<Package> for Dep {
+    fn from(pkg: Package) -> Self {
+        Self {
+            name: pkg.name,
+            version: pkg.version,
+            source: pkg.source,
+        }
+    }
+}
+
+type Deps = BTreeMap<Name, Vec<Dep>>;
+
+fn process_lockfile<P: AsRef<Path>>(p: P) -> Result<Deps, Error> {
     let mut f = Lockfile::load(&p)
         .with_context(|| format!("Couldn't load lockfile {}", p.as_ref().display()))?;
     f.packages.sort_unstable();
 
-    let mut packages = Packages::new();
+    let mut packages = Deps::new();
 
     for pkg in f.packages {
         packages
             .entry(pkg.name.clone())
             .or_default()
-            .push(pkg);
+            .push(pkg.into());
     }
 
     Ok(packages)
@@ -32,26 +52,26 @@ fn process_lockfile<P: AsRef<Path>>(p: P) -> Result<Packages, Error> {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // Sure, but Update will be much more common
 enum Op {
-    Add(Package),
-    Remove(Package),
-    Update(Package, Package),
+    Add(Dep),
+    Remove(Dep),
+    Update(Dep, Dep),
 }
 
 impl Display for Op {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
         match self {
-            Op::Add(pkg) => write!(fmt, "+++ {} {}", pkg.name, pkg.version),
-            Op::Remove(pkg) => write!(fmt, "--- {} {}", pkg.name, pkg.version),
+            Op::Add(dep) => write!(fmt, "+++ {} {}", dep.name, dep.version),
+            Op::Remove(dep) => write!(fmt, "--- {} {}", dep.name, dep.version),
             Op::Update(old, new) => write!(fmt, "    {} {} -> {}", old.name, old.version, new.version),
         }
     }
 }
 
-fn wrap_op(op: fn(Package) -> Op, pkgs: Vec<Package>) -> impl Iterator<Item = Op> {
-    pkgs.into_iter().map(op)
+fn wrap_op(op: fn(Dep) -> Op, desp: Vec<Dep>) -> impl Iterator<Item = Op> {
+    desp.into_iter().map(op)
 }
 
-fn find_vers_diff(old: Vec<Package>, new: Vec<Package>) -> impl Iterator<Item = Op> {
+fn find_vers_diff(old: Vec<Dep>, new: Vec<Dep>) -> impl Iterator<Item = Op> {
     let mut old: BTreeSet<_> = old.into_iter().collect();
     let mut new: BTreeSet<_> = new.into_iter().collect();
 
