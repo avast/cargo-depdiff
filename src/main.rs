@@ -9,13 +9,13 @@ use anyhow::{anyhow, Context, Error};
 use cargo::util::config::Config;
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
+use difference::{Changeset, Difference};
 use either::Either;
 use git2::{Object, ObjectType, Oid, Repository};
 use itertools::{EitherOrBoth, Itertools};
+use sources::Resolver;
 use structopt::StructOpt;
 use thiserror::Error;
-
-use sources::Resolver;
 
 mod sources;
 
@@ -26,7 +26,7 @@ mod sources;
 /// Checking what changed about dependencies between versions.
 #[derive(Debug, StructOpt)]
 struct Opts {
-    /// Git range specifying the changes to inspect.
+    #[structopt(short = "r", long = "revspec")]
     revspec: Option<String>,
 
     /// Path to the lock file inside the repository.
@@ -98,6 +98,27 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
     Ok(deps)
 }
 
+fn get_changelog(path: &Path) -> Result<String, Error> {
+    let changelog_file = path.join("CHANGELOG.md");
+    let contents = fs::read_to_string(changelog_file)
+        .with_context(|| format!("Failed to load CHANGELOG file at {}", path.display()));
+    contents
+}
+
+fn changelog_diff(old: String, new: String) -> String {
+    let changeset = Changeset::new(&old, &new, "\n");
+    let mut diff = changeset.diffs.iter().filter_map(|d| match d {
+        Difference::Add(a) => Some(a),
+        _ => None,
+    });
+    diff.join("\n")
+}
+
+fn dep_to_changelog(dep: &Dep, resolver: &Resolver) -> Result<String, Error> {
+    let path = resolver.dir(dep)?;
+    get_changelog(path)
+}
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // Sure, but Update will be much more common
 enum Op {
@@ -110,9 +131,27 @@ impl Op {
     fn print_root(&self, resolver: &Resolver) {
         match self {
             Op::Add(dep) | Op::Remove(dep) | Op::Update(_, dep) => {
-                let dir = resolver.dir(dep).map(|d| d.display().to_string()).unwrap_or_default();
+                let dir = resolver
+                    .dir(dep)
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default();
                 println!("Root of {}: {}", dep.name, dir);
             }
+        }
+    }
+    fn print_changelog(&self, resolver: &Resolver) {
+        match self {
+            Op::Update(old, new) => match (
+                dep_to_changelog(old, resolver),
+                dep_to_changelog(new, resolver),
+            ) {
+                (Ok(old), Ok(new)) => {
+                    let diff = changelog_diff(old, new);
+                    println!("{}", diff);
+                }
+                _ => (),
+            },
+            _ => (),
         }
     }
 }
@@ -189,7 +228,9 @@ fn main() -> Result<(), Error> {
             //
             // Compare to its first parent.
             let commit_obj = revspec.from().ok_or(NotSpec).context("Single commit")?;
-            let commit = commit_obj.as_commit().with_context(|| format!("{} is not a commit", commit_obj.id()))?;
+            let commit = commit_obj
+                .as_commit()
+                .with_context(|| format!("{} is not a commit", commit_obj.id()))?;
 
             parent = commit.parent(0).map_err(|_| NoParent)?.into_object();
             (Some(&parent), Some(commit_obj))
@@ -201,7 +242,10 @@ fn main() -> Result<(), Error> {
         )
     } else {
         let head = repo.head().context("Failed to get current HEAD")?;
-        let commit = head.peel(ObjectType::Commit).context("Can't resolve HEAD to commit")?.id();
+        let commit = head
+            .peel(ObjectType::Commit)
+            .context("Can't resolve HEAD to commit")?
+            .id();
         let old = packages_from_git(&repo, commit, &opts.path).context("Reading HEAD lock file")?;
 
         let path = opts.repo.join(opts.path);
@@ -214,7 +258,8 @@ fn main() -> Result<(), Error> {
         (old, new)
     };
 
-    let ops = old.into_iter()
+    let ops = old
+        .into_iter()
         .merge_join_by(new, |l, r| l.0.cmp(&r.0))
         .flat_map(|dep_group| match dep_group {
             EitherOrBoth::Left(remove) => Either::Left(wrap_op(Op::Remove, remove.1)),
@@ -223,18 +268,17 @@ fn main() -> Result<(), Error> {
         })
         .collect::<Vec<_>>();
 
-    let all_deps = ops
-        .iter()
-        .flat_map(|op| match op {
-            Op::Add(dep) | Op::Remove(dep) => Either::Left(iter::once(dep)),
-            Op::Update(old, new) => Either::Right(iter::once(old).chain(iter::once(new))),
-        });
+    let all_deps = ops.iter().flat_map(|op| match op {
+        Op::Add(dep) | Op::Remove(dep) => Either::Left(iter::once(dep)),
+        Op::Update(old, new) => Either::Right(iter::once(old).chain(iter::once(new))),
+    });
 
     let config = Config::default()?;
     let resolver = Resolver::new(&config, all_deps)?;
 
     for op in &ops {
         op.print_root(&resolver);
+        op.print_changelog(&resolver);
         println!("{}", op);
     }
 
