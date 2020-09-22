@@ -35,8 +35,19 @@ struct Opts {
     #[structopt(short = "p", long = "path", default_value = "Cargo.lock")]
     path: PathBuf,
 
+    /// Path to the git repo with sources.
     #[structopt(short = "g", long = "git-repo", default_value = ".")]
     repo: PathBuf,
+
+    /// Print changes to metadata.
+    ///
+    /// Will print changes to important metadata:
+    ///
+    /// * Changed licenses.
+    /// * Added authors.
+    /// * Addition of build scripts or proc macros (they run during compile time).
+    #[structopt(short = "m", long = "metadata")]
+    metadata: bool,
 }
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
@@ -107,13 +118,59 @@ enum Op {
 }
 
 impl Op {
-    fn print_root(&self, resolver: &Resolver) {
+    fn print_metadata(&self, resolver: &Resolver) -> Result<(), Error> {
         match self {
-            Op::Add(dep) | Op::Remove(dep) | Op::Update(_, dep) => {
-                let dir = resolver.dir(dep).map(|d| d.display().to_string()).unwrap_or_default();
-                println!("Root of {}: {}", dep.name, dir);
+            Op::Remove(_) => (), // Removing deps is always good!
+            Op::Add(dep) => {
+                let pkg = resolver.pkg(dep)?;
+                if pkg.has_custom_build() {
+                    println!("--> Has a build script");
+                }
+                if pkg.proc_macro() {
+                    println!("--> Is a proc macro");
+                }
+            }
+            Op::Update(old, new) => {
+                let old = resolver.pkg(old)?;
+                let new = resolver.pkg(new)?;
+
+                if !old.has_custom_build() && new.has_custom_build() {
+                    println!("--> Adds a build script");
+                }
+                if !old.proc_macro() && new.proc_macro() {
+                    println!("--> Turns into a build script");
+                }
+
+                let old_meta = old.manifest().metadata();
+                let new_meta = new.manifest().metadata();
+                if old_meta.license != new_meta.license {
+                    println!(
+                        "--> License changed to {}",
+                        new_meta.license.as_deref().unwrap_or("<none>")
+                    );
+                }
+
+                if old_meta.license_file != new_meta.license_file {
+                    println!(
+                        "--> License file changed to {}",
+                        new_meta.license_file.as_deref().unwrap_or("<none>")
+                    );
+                }
+
+                let old_authors = old_meta.authors.iter().collect::<BTreeSet<_>>();
+                let new_authors = new_meta.authors.iter().collect::<BTreeSet<_>>();
+                let added_authors = &new_authors - &old_authors;
+
+                if !added_authors.is_empty() {
+                    println!("--> Additional authors ({})", added_authors.iter().join(", "));
+                }
+
+                // TODO: We also want maintainers, these are not available through the manifest,
+                // but maybe through the crates.io
             }
         }
+
+        Ok(())
     }
 }
 
@@ -189,7 +246,9 @@ fn main() -> Result<(), Error> {
             //
             // Compare to its first parent.
             let commit_obj = revspec.from().ok_or(NotSpec).context("Single commit")?;
-            let commit = commit_obj.as_commit().with_context(|| format!("{} is not a commit", commit_obj.id()))?;
+            let commit = commit_obj
+                .as_commit()
+                .with_context(|| format!("{} is not a commit", commit_obj.id()))?;
 
             parent = commit.parent(0).map_err(|_| NoParent)?.into_object();
             (Some(&parent), Some(commit_obj))
@@ -201,7 +260,10 @@ fn main() -> Result<(), Error> {
         )
     } else {
         let head = repo.head().context("Failed to get current HEAD")?;
-        let commit = head.peel(ObjectType::Commit).context("Can't resolve HEAD to commit")?.id();
+        let commit = head
+            .peel(ObjectType::Commit)
+            .context("Can't resolve HEAD to commit")?
+            .id();
         let old = packages_from_git(&repo, commit, &opts.path).context("Reading HEAD lock file")?;
 
         let path = opts.repo.join(opts.path);
@@ -214,7 +276,8 @@ fn main() -> Result<(), Error> {
         (old, new)
     };
 
-    let ops = old.into_iter()
+    let ops = old
+        .into_iter()
         .merge_join_by(new, |l, r| l.0.cmp(&r.0))
         .flat_map(|dep_group| match dep_group {
             EitherOrBoth::Left(remove) => Either::Left(wrap_op(Op::Remove, remove.1)),
@@ -223,18 +286,18 @@ fn main() -> Result<(), Error> {
         })
         .collect::<Vec<_>>();
 
-    let all_deps = ops
-        .iter()
-        .flat_map(|op| match op {
-            Op::Add(dep) | Op::Remove(dep) => Either::Left(iter::once(dep)),
-            Op::Update(old, new) => Either::Right(iter::once(old).chain(iter::once(new))),
-        });
+    let all_deps = ops.iter().flat_map(|op| match op {
+        Op::Add(dep) | Op::Remove(dep) => Either::Left(iter::once(dep)),
+        Op::Update(old, new) => Either::Right(iter::once(old).chain(iter::once(new))),
+    });
 
     let config = Config::default()?;
     let resolver = Resolver::new(&config, all_deps)?;
 
     for op in &ops {
-        op.print_root(&resolver);
+        if opts.metadata {
+            op.print_metadata(&resolver)?;
+        }
         println!("{}", op);
     }
 

@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Error};
-use cargo::core::SourceId;
-use cargo::core::source::SourceMap;
 use cargo::core::package::{Package, PackageSet};
 use cargo::core::package_id::PackageId;
+use cargo::core::source::SourceMap;
+use cargo::core::SourceId;
 use cargo::sources::config::SourceConfigMap;
 use cargo::util::config::Config;
 use semver::Version;
@@ -38,8 +38,7 @@ impl<'cfg> Resolver<'cfg> {
         let pkgs = deps
             .into_iter()
             .map(|d| {
-                d
-                    .pkg_id(&config)
+                d.pkg_id(&config)
                     .with_context(|| format!("Can't create pkg id for {}", d.name))
             })
             .collect::<Result<Vec<_>, _>>()?;
