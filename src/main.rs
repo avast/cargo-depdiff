@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Error};
 use cargo::util::config::Config;
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
+use difference::{Changeset, Difference};
 use either::Either;
 use git2::{Object, ObjectType, Oid, Repository};
 use itertools::{EitherOrBoth, Itertools};
@@ -109,6 +110,22 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
     Ok(deps)
 }
 
+fn get_changelog(path: &Path) -> Result<String, Error> {
+    let changelog_file = path.join("CHANGELOG.md");
+    let contents = fs::read_to_string(changelog_file)
+        .with_context(|| format!("Failed to load CHANGELOG file at {}", path.display()));
+    contents
+}
+
+fn changelog_diff(old: String, new: String) -> String {
+    let changeset = Changeset::new(&old, &new, "\n");
+    let mut diff = changeset.diffs.iter().filter_map(|d| match d {
+        Difference::Add(a) => Some(a),
+        _ => None,
+    });
+    diff.join("\n")
+}
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // Sure, but Update will be much more common
 enum Op {
@@ -165,7 +182,18 @@ impl Op {
                     let added_authors = &new_authors - &old_authors;
 
                     if !added_authors.is_empty() {
-                        println!("--> Additional authors ({})", added_authors.iter().join(", "));
+                        println!(
+                            "--> Additional authors ({})",
+                            added_authors.iter().join(", ")
+                        );
+                    }
+
+                    match (get_changelog(old.root()), get_changelog(new.root())) {
+                        (Ok(old), Ok(new)) => {
+                            let diff = changelog_diff(old, new);
+                            println!("--> Additions to CHANGELOG\n{}", diff);
+                        }
+                        _ => (),
                     }
                 }
 

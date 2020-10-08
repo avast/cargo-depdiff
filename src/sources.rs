@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use anyhow::{Context, Error};
 use cargo::core::package::{Package, PackageSet};
@@ -55,19 +54,12 @@ impl<'cfg> Resolver<'cfg> {
 
         let package_set = PackageSet::new(&pkgs, source_map, config)?;
 
-        Ok(Self {
-            pkgs: package_set,
-        })
+        Ok(Self { pkgs: package_set })
     }
 
     pub(crate) fn pkg(&self, dep: &Dep) -> Result<Option<&Package>, Error> {
         let id = dep.pkg_id()?;
         let pkg = id.map(|id| self.pkgs.get_one(id)).transpose()?;
         Ok(pkg)
-    }
-
-    pub(crate) fn dir(&self, dep: &Dep) -> Result<Option<&Path>, Error> {
-        let pkg = self.pkg(dep)?;
-        Ok(pkg.map(|pkg| pkg.root()))
     }
 }
