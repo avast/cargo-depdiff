@@ -2,6 +2,7 @@ use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
+use std::io::ErrorKind;
 use std::iter;
 use std::path::{Path, PathBuf};
 
@@ -116,9 +117,15 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
     Ok(deps)
 }
 
-fn get_changelog(path: &Path) -> String {
+fn get_changelog(path: &Path) -> Result<String, Error> {
     let changelog_file = path.join("CHANGELOG.md");
-    let contents = fs::read_to_string(changelog_file).unwrap_or("".to_string());
+    let contents = match fs::read_to_string(changelog_file) {
+        Ok(ok) => Ok(ok),
+        Err(err) => match err.kind() {
+            ErrorKind::NotFound => Ok(String::new()),
+            _ => Err(anyhow!("Error while reading CHANGELOG.md")),
+        },
+    };
     contents
 }
 
@@ -196,9 +203,14 @@ impl Op {
                     if changelog {
                         let old = get_changelog(old.root());
                         let new = get_changelog(new.root());
-                        let diff = changelog_diff(old, new);
-                        if diff != "" {
-                            println!("--> Additions to CHANGELOG\n{}", diff);
+                        match (old, new) {
+                            (Ok(old), Ok(new)) => {
+                                let diff = changelog_diff(old, new);
+                                if diff != "" {
+                                    println!("--> Additions to CHANGELOG\n{}", diff)
+                                }
+                            }
+                            _ => println!("--> Error while reading CHANGELOG"),
                         }
                     }
                 }
@@ -206,6 +218,30 @@ impl Op {
                 // TODO: We also want maintainers, these are not available through the manifest,
                 // but maybe through the crates.io
             }
+        }
+
+        Ok(())
+    }
+    fn print_changelog(&self, resolver: &Resolver) -> Result<(), Error> {
+        match self {
+            Op::Update(old, new) => {
+                let old = resolver.pkg(old)?;
+                let new = resolver.pkg(new)?;
+                if let (Some(old), Some(new)) = (old, new) {
+                    let old = get_changelog(old.root());
+                    let new = get_changelog(new.root());
+                    match (old, new) {
+                        (Ok(old), Ok(new)) => {
+                            let diff = changelog_diff(old, new);
+                            if diff != "" {
+                                println!("--> Additions to CHANGELOG\n{}", diff)
+                            }
+                        }
+                        _ => println!("--> Error while reading CHANGELOG"),
+                    }
+                }
+            }
+            _ => (),
         }
 
         Ok(())
@@ -341,6 +377,8 @@ fn main() -> Result<(), Error> {
         println!("{}", op);
         if opts.metadata {
             op.print_metadata(&resolver, opts.changelog)?;
+        } else if opts.changelog {
+            op.print_changelog(&resolver)?;
         }
     }
 
