@@ -49,6 +49,12 @@ struct Opts {
     /// * Addition of build scripts or proc macros (they run during compile time).
     #[structopt(short = "m", long = "metadata")]
     metadata: bool,
+
+    /// Print also additions to CHANGELOG.md when printing metadata.
+    ///
+    /// Applies only if `-m/--metadata`.
+    #[structopt(short = "c", long = "changelog")]
+    changelog: bool,
 }
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
@@ -110,10 +116,9 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
     Ok(deps)
 }
 
-fn get_changelog(path: &Path) -> Result<String, Error> {
+fn get_changelog(path: &Path) -> String {
     let changelog_file = path.join("CHANGELOG.md");
-    let contents = fs::read_to_string(changelog_file)
-        .with_context(|| format!("Failed to load CHANGELOG file at {}", path.display()));
+    let contents = fs::read_to_string(changelog_file).unwrap_or("".to_string());
     contents
 }
 
@@ -135,7 +140,7 @@ enum Op {
 }
 
 impl Op {
-    fn print_metadata(&self, resolver: &Resolver) -> Result<(), Error> {
+    fn print_metadata(&self, resolver: &Resolver, changelog: bool) -> Result<(), Error> {
         match self {
             Op::Remove(_) => (), // Removing deps is always good!
             Op::Add(dep) => {
@@ -188,12 +193,11 @@ impl Op {
                         );
                     }
 
-                    match (get_changelog(old.root()), get_changelog(new.root())) {
-                        (Ok(old), Ok(new)) => {
-                            let diff = changelog_diff(old, new);
-                            println!("--> Additions to CHANGELOG\n{}", diff);
-                        }
-                        _ => (),
+                    if changelog {
+                        let old = get_changelog(old.root());
+                        let new = get_changelog(new.root());
+                        let diff = changelog_diff(old, new);
+                        println!("--> Additions to CHANGELOG\n{}", diff);
                     }
                 }
 
@@ -334,7 +338,7 @@ fn main() -> Result<(), Error> {
     for op in &ops {
         println!("{}", op);
         if opts.metadata {
-            op.print_metadata(&resolver)?;
+            op.print_metadata(&resolver, opts.changelog)?;
         }
     }
 
