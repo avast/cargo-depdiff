@@ -51,9 +51,7 @@ struct Opts {
     #[structopt(short = "m", long = "metadata")]
     metadata: bool,
 
-    /// Print also additions to CHANGELOG.md when printing metadata.
-    ///
-    /// Applies only if `-m/--metadata`.
+    /// Print additions to CHANGELOG.md.
     #[structopt(short = "c", long = "changelog")]
     changelog: bool,
 }
