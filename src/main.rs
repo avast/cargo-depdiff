@@ -197,7 +197,9 @@ impl Op {
                         let old = get_changelog(old.root());
                         let new = get_changelog(new.root());
                         let diff = changelog_diff(old, new);
-                        println!("--> Additions to CHANGELOG\n{}", diff);
+                        if diff != "" {
+                            println!("--> Additions to CHANGELOG\n{}", diff);
+                        }
                     }
                 }
 
