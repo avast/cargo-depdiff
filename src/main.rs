@@ -117,11 +117,12 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
 
 fn get_changelog(path: &Path) -> Result<String, Error> {
     let changelog_file = path.join("CHANGELOG.md");
-    let contents = match fs::read_to_string(changelog_file) {
+    let contents = match fs::read_to_string(&changelog_file) {
         Ok(ok) => Ok(ok),
         Err(err) => match err.kind() {
             ErrorKind::NotFound => Ok(String::new()),
-            _ => Err(anyhow!("Error while reading CHANGELOG.md")),
+            _ => Err(Error::from(err)
+                .context(format!("Error while reading {}", changelog_file.display()))),
         },
     };
     contents
@@ -134,6 +135,16 @@ fn changelog_diff(old: String, new: String) -> String {
         _ => None,
     });
     diff.join("\n")
+}
+
+fn changelog_print(old: &cargo::core::Package, new: &cargo::core::Package) -> Result<(), Error> {
+    let old = get_changelog(old.root())?;
+    let new = get_changelog(new.root())?;
+    let diff = changelog_diff(old, new);
+    if diff != "" {
+        println!("--> Additions to CHANGELOG.md\n{}", diff);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -199,17 +210,7 @@ impl Op {
                     }
 
                     if changelog {
-                        let old = get_changelog(old.root());
-                        let new = get_changelog(new.root());
-                        match (old, new) {
-                            (Ok(old), Ok(new)) => {
-                                let diff = changelog_diff(old, new);
-                                if diff != "" {
-                                    println!("--> Additions to CHANGELOG\n{}", diff)
-                                }
-                            }
-                            _ => println!("--> Error while reading CHANGELOG"),
-                        }
+                        changelog_print(old, new)?
                     }
                 }
 
@@ -226,17 +227,7 @@ impl Op {
                 let old = resolver.pkg(old)?;
                 let new = resolver.pkg(new)?;
                 if let (Some(old), Some(new)) = (old, new) {
-                    let old = get_changelog(old.root());
-                    let new = get_changelog(new.root());
-                    match (old, new) {
-                        (Ok(old), Ok(new)) => {
-                            let diff = changelog_diff(old, new);
-                            if diff != "" {
-                                println!("--> Additions to CHANGELOG\n{}", diff)
-                            }
-                        }
-                        _ => println!("--> Error while reading CHANGELOG"),
-                    }
+                    changelog_print(old, new)?
                 }
             }
             _ => (),
