@@ -2,6 +2,7 @@ use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
+use std::io::ErrorKind;
 use std::iter;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,7 @@ use anyhow::{anyhow, Context, Error};
 use cargo::util::config::Config;
 use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
+use difference::{Changeset, Difference};
 use either::Either;
 use git2::{Object, ObjectType, Oid, Repository};
 use itertools::{EitherOrBoth, Itertools};
@@ -48,6 +50,10 @@ struct Opts {
     /// * Addition of build scripts or proc macros (they run during compile time).
     #[structopt(short = "m", long = "metadata")]
     metadata: bool,
+
+    /// Print additions to CHANGELOG.md.
+    #[structopt(short = "c", long = "changelog")]
+    changelog: bool,
 }
 
 #[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
@@ -109,6 +115,38 @@ fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, 
     Ok(deps)
 }
 
+fn get_changelog(path: &Path) -> Result<String, Error> {
+    let changelog_file = path.join("CHANGELOG.md");
+    let contents = match fs::read_to_string(&changelog_file) {
+        Ok(ok) => Ok(ok),
+        Err(err) => match err.kind() {
+            ErrorKind::NotFound => Ok(String::new()),
+            _ => Err(Error::from(err)
+                .context(format!("Error while reading {}", changelog_file.display()))),
+        },
+    };
+    contents
+}
+
+fn changelog_diff(old: String, new: String) -> String {
+    let changeset = Changeset::new(&old, &new, "\n");
+    let mut diff = changeset.diffs.iter().filter_map(|d| match d {
+        Difference::Add(a) => Some(a),
+        _ => None,
+    });
+    diff.join("\n")
+}
+
+fn changelog_print(old: &cargo::core::Package, new: &cargo::core::Package) -> Result<(), Error> {
+    let old = get_changelog(old.root())?;
+    let new = get_changelog(new.root())?;
+    let diff = changelog_diff(old, new);
+    if diff != "" {
+        println!("--> Additions to CHANGELOG.md\n{}", diff);
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)] // Sure, but Update will be much more common
 enum Op {
@@ -118,7 +156,7 @@ enum Op {
 }
 
 impl Op {
-    fn print_metadata(&self, resolver: &Resolver) -> Result<(), Error> {
+    fn print_metadata(&self, resolver: &Resolver, changelog: bool) -> Result<(), Error> {
         match self {
             Op::Remove(_) => (), // Removing deps is always good!
             Op::Add(dep) => {
@@ -165,13 +203,34 @@ impl Op {
                     let added_authors = &new_authors - &old_authors;
 
                     if !added_authors.is_empty() {
-                        println!("--> Additional authors ({})", added_authors.iter().join(", "));
+                        println!(
+                            "--> Additional authors ({})",
+                            added_authors.iter().join(", ")
+                        );
+                    }
+
+                    if changelog {
+                        changelog_print(old, new)?
                     }
                 }
 
                 // TODO: We also want maintainers, these are not available through the manifest,
                 // but maybe through the crates.io
             }
+        }
+
+        Ok(())
+    }
+    fn print_changelog(&self, resolver: &Resolver) -> Result<(), Error> {
+        match self {
+            Op::Update(old, new) => {
+                let old = resolver.pkg(old)?;
+                let new = resolver.pkg(new)?;
+                if let (Some(old), Some(new)) = (old, new) {
+                    changelog_print(old, new)?
+                }
+            }
+            _ => (),
         }
 
         Ok(())
@@ -306,7 +365,9 @@ fn main() -> Result<(), Error> {
     for op in &ops {
         println!("{}", op);
         if opts.metadata {
-            op.print_metadata(&resolver)?;
+            op.print_metadata(&resolver, opts.changelog)?;
+        } else if opts.changelog {
+            op.print_changelog(&resolver)?;
         }
     }
 
