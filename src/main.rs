@@ -295,7 +295,11 @@ fn main() -> Result<(), Error> {
 
     let (old, new) = if let Some(revspec) = opts.revspec.as_ref() {
         let spec = |spec: Option<&Object<'_>>| {
-            let spec = spec.ok_or(NotSpec)?.id();
+            let spec = spec.ok_or(NotSpec)?;
+            let spec = match spec.kind() {
+                Some(ObjectType::Tag) => spec.peel_to_tag()?.target_id(),
+                _ => spec.id(),
+            };
             packages_from_git(&repo, spec, &opts.path)
         };
 
