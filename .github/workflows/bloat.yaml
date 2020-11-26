@@ -1,0 +1,24 @@
+on: # rebuild any PRs and main branch changes
+  pull_request:
+  push:
+    branches:
+      - master
+
+name: Bloat
+
+jobs:
+  cargo_bloat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run cargo bloat
+        uses: orf/cargo-bloat-action@9fe5b90622b9af5e13f635a94e7a206b706678db
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
