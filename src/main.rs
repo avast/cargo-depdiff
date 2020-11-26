@@ -222,15 +222,12 @@ impl Op {
         Ok(())
     }
     fn print_changelog(&self, resolver: &Resolver) -> Result<(), Error> {
-        match self {
-            Op::Update(old, new) => {
-                let old = resolver.pkg(old)?;
-                let new = resolver.pkg(new)?;
-                if let (Some(old), Some(new)) = (old, new) {
-                    changelog_print(old, new)?
-                }
+        if let Op::Update(old, new) = self {
+            let old = resolver.pkg(old)?;
+            let new = resolver.pkg(new)?;
+            if let (Some(old), Some(new)) = (old, new) {
+                changelog_print(old, new)?
             }
-            _ => (),
         }
 
         Ok(())

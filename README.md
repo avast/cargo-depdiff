@@ -1,5 +1,7 @@
 # cargo-depdiff
 
+[![Actions Status](https://github.com/vorner/cargo-depdiff/workflows/test/badge.svg)](https://github.com/vorner/cargo-depdiff/actions)
+
 If you do `cargo update`, add dependencies to the project or update something
 manually, the dependencies recorded in `Cargo.toml` change and you get a report
 of what changed right at that time. But when browsing the history, reading what
