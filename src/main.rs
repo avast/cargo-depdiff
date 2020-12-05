@@ -12,7 +12,7 @@ use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
 use difference::{Changeset, Difference};
 use either::Either;
-use git2::{Object, Repository};
+use git2::{Commit, Object, Repository};
 use itertools::{EitherOrBoth, Itertools};
 use structopt::StructOpt;
 use thiserror::Error;
@@ -79,7 +79,7 @@ struct NotBlob;
 
 fn snapshot_to_file_content(
     repo: &Repository,
-    commit: &git2::Commit,
+    commit: &Commit,
     path: &Path,
 ) -> Result<String, Error> {
     let tree = commit.tree()?;
@@ -108,7 +108,7 @@ fn packages_from_str(data: &str) -> Result<Deps, Error> {
     Ok(packages)
 }
 
-fn packages_from_git(repo: &Repository, commit: &git2::Commit, path: &Path) -> Result<Deps, Error> {
+fn packages_from_git(repo: &Repository, commit: &Commit, path: &Path) -> Result<Deps, Error> {
     let data = snapshot_to_file_content(repo, commit, path).with_context(|| {
         format!(
             "Couldn't find lock file {} in {}",
