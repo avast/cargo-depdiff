@@ -12,7 +12,7 @@ use cargo_lock::package::{Name, Package, SourceId, Version};
 use cargo_lock::Lockfile;
 use difference::{Changeset, Difference};
 use either::Either;
-use git2::{Object, ObjectType, Oid, Repository};
+use git2::{Commit, Object, Repository};
 use itertools::{EitherOrBoth, Itertools};
 use structopt::StructOpt;
 use thiserror::Error;
@@ -77,8 +77,11 @@ impl From<Package> for Dep {
 #[error("Not a git blob")]
 struct NotBlob;
 
-fn snapshot_to_file_content(repo: &Repository, hash: Oid, path: &Path) -> Result<String, Error> {
-    let commit = repo.find_commit(hash)?;
+fn snapshot_to_file_content(
+    repo: &Repository,
+    commit: &Commit,
+    path: &Path,
+) -> Result<String, Error> {
     let tree = commit.tree()?;
     let tree_entry = tree.get_path(path)?;
     let object = tree_entry.to_object(&repo)?;
@@ -105,12 +108,22 @@ fn packages_from_str(data: &str) -> Result<Deps, Error> {
     Ok(packages)
 }
 
-fn packages_from_git(repo: &Repository, hash: Oid, path: &Path) -> Result<Deps, Error> {
-    let data = snapshot_to_file_content(repo, hash, path)
-        .with_context(|| format!("Couldn't find lock file {} in {}", path.display(), hash))?;
+fn packages_from_git(repo: &Repository, commit: &Commit, path: &Path) -> Result<Deps, Error> {
+    let data = snapshot_to_file_content(repo, commit, path).with_context(|| {
+        format!(
+            "Couldn't find lock file {} in {}",
+            path.display(),
+            commit.id()
+        )
+    })?;
 
-    let deps = packages_from_str(&data)
-        .with_context(|| format!("{} in {} is not valid lock file", path.display(), hash))?;
+    let deps = packages_from_str(&data).with_context(|| {
+        format!(
+            "{} in {} is not valid lock file",
+            path.display(),
+            commit.id()
+        )
+    })?;
 
     Ok(deps)
 }
@@ -296,12 +309,10 @@ fn main() -> Result<(), Error> {
     let (old, new) = if let Some(revspec) = opts.revspec.as_ref() {
         let spec = |spec: Option<&Object<'_>>| {
             let spec = spec.ok_or(NotSpec)?;
-            let spec = if let Some(tag) = spec.as_tag() {
-                tag.target_id()
-            } else {
-                spec.id()
-            };
-            packages_from_git(&repo, spec, &opts.path)
+            let commit = spec
+                .peel_to_commit()
+                .context(format!("Can't resolve the spec {} to a commit", spec.id()))?;
+            packages_from_git(&repo, &commit, &opts.path)
         };
 
         let revspec = repo.revparse(revspec)?;
@@ -331,10 +342,10 @@ fn main() -> Result<(), Error> {
     } else {
         let head = repo.head().context("Failed to get current HEAD")?;
         let commit = head
-            .peel(ObjectType::Commit)
-            .context("Can't resolve HEAD to commit")?
-            .id();
-        let old = packages_from_git(&repo, commit, &opts.path).context("Reading HEAD lock file")?;
+            .peel_to_commit()
+            .context("Can't resolve HEAD to commit")?;
+        let old =
+            packages_from_git(&repo, &commit, &opts.path).context("Reading HEAD lock file")?;
 
         let path = opts.repo.join(opts.path);
         let current = fs::read_to_string(&path)
