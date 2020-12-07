@@ -1,5 +1,6 @@
 use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs;
 use std::io::ErrorKind;
@@ -302,7 +303,16 @@ struct NotSpec;
 struct NoParent;
 
 fn main() -> Result<(), Error> {
-    let opts = Opts::from_args();
+    // If run under cargo, we get an extra „depdiff“ argument (eg. cargo-depdiff depdiff args). So
+    // we try to parse both ways.
+    let mut args: Vec<_> = env::args_os().collect();
+    let opts = Opts::from_iter_safe(&args).or_else(|_| {
+        let run_from_cargo = args.get(1).map(|arg| arg == "depdiff").unwrap_or(false);
+        if run_from_cargo {
+            args.remove(1);
+        }
+        Opts::from_iter_safe(&args)
+    })?;
     let repo = Repository::open(&opts.repo)
         .with_context(|| format!("Can't open git repo at {}", opts.repo.display()))?;
 
