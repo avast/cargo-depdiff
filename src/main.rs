@@ -155,7 +155,7 @@ fn changelog_print(old: &cargo::core::Package, new: &cargo::core::Package) -> Re
     let old = get_changelog(old.root())?;
     let new = get_changelog(new.root())?;
     let diff = changelog_diff(old, new);
-    if diff != "" {
+    if !diff.is_empty() {
         println!("--> Additions to CHANGELOG.md\n{}", diff);
     }
     Ok(())
